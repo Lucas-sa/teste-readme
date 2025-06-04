@@ -70,32 +70,21 @@ Ao solicitar um tronco E1 SIP ou similar a uma operadora, você sempre precisar�
 - **Tabela Principal (main):** Contém rotas da eth0 (internet)
 - **Tabela 'vivo':** Criada automaticamente para rotas da eth1 (telefonia)
 
-**2. Policy Routing:**
+**2. Por que não usar gateway na eth1:**
+- Dois gateways padrão causariam conflito
+- O sistema não saberia qual usar para cada destino
+- Policy Routing resolve isso
+
+**3. Policy Routing:**
 - **ip rule:** Define QUANDO usar uma tabela específica
 - **ip route:** Define COMO rotear dentro da tabela
 - **priority:** Ordem de prioridade das regras (menor número = maior prioridade)
 
-**3. Fluxo de Funcionamento:**
+**4. Fluxo de Funcionamento:**
 1. Pacote chega ao sistema
 2. Linux verifica as regras (`ip rule`) por ordem de prioridade
 3. Se o pacote corresponde a uma regra, usa a tabela especificada
 4. Dentro da tabela, segue as rotas definidas (`ip route`)
-
-**4. Por que não usar gateway na eth1:**
-- Dois gateways padrão causariam conflito
-- O sistema não saberia qual usar para cada destino
-- Policy Routing resolve isso elegantemente
-
-#### Resumo dos Parâmetros da Configuração eth1
-
-| Parâmetro | Valor Exemplo | Descrição |
-|-----------|---------------|-----------|
-| `address` | `10.12.116.130` | IP do PABX fornecido pela operadora |
-| `netmask` | `255.255.255.248` | Máscara da sub-rede (/29 = 8 IPs) |
-| `table vivo` | Nome da tabela | Tabela de roteamento específica para telefonia |
-| Gateway | `10.12.116.129` | Gateway da operadora (apenas na tabela vivo) |
-| Prioridades | `1000-1003` | Ordem das regras (menor = maior prioridade) |
-| IPs de Destino | `10.255.240.111/112` | Servidores SIP e RTP da operadora |
 
 #### Exemplo Prático - Configuração da Interface eth1 (Vivo)
 
@@ -114,69 +103,54 @@ iface eth0 inet static
 auto eth1                   # Ativa automaticamente a interface no boot
 allow-hotplug eth1          # Permite ativação automática quando cabo é conectado
 iface eth1 inet static      # Define configuração estática (não DHCP)
-    
-    # ===== CONFIGURAÇÃO BÁSICA DA INTERFACE =====
     address 10.12.116.130      # IP do PABX fornecido pela operadora
     netmask 255.255.255.248    # Máscara /29 (8 IPs: .128 até .135)
     
-    # OBSERVAÇÃO: NÃO colocamos "gateway" aqui para evitar conflito com eth0
+    # NÃO colocamos "gateway" aqui para evitar conflito com eth0
     
     # ===== CRIAÇÃO DE TABELA DE ROTEAMENTO ESPECÍFICA =====
     # Comando executado APÓS a interface subir (post-up)
     
-    # 1. Rota para a sub-rede local da Vivo
-    # sub-rede 10.12.116.128/29 baseada no mascara 255.255.255.248, mas em ultimo caso pode se usar o 10.12.116.129 no lugar da sub-rede
+    # Regra que define que todo tráfego destinado à sub-rede 10.12.116.128/29 sera direcionado para eth1 e tera como IP de origem 10.12.116.130
     post-up ip route add 10.12.116.128/29 dev eth1 src 10.12.116.130 table vivo
-    # Explicação: Adiciona na tabela 'vivo' uma rota para a rede 10.12.116.128/29
-    # usando eth1 como dispositivo e 10.12.116.130 como IP de origem para todos os pacotes que saem dessa interface
-    
-    # 2. Rota padrão para tráfego destinado aos servidores da Vivo
+
+    # A sub-rede 10.12.116.128/29 foi definida com base na máscara 255.255.255.248, usando o calculo de bits.
+    # Em ultimo caso pode ser usado o 10.12.116.129 no lugar da sub-rede 10.12.116.128/29
+
+    # Regra que define que a tabela vivo tara como rota padrão o IP 10.12.116.129 (gateway da Vivo) e sera direcionado para eth1
     post-up ip route add default via 10.12.116.129 dev eth1 table vivo
-    # Explicação: Define 10.12.116.129 (gateway da Vivo) como rota padrão
-    # na tabela 'vivo' usando a interface eth1
     
     # ===== REGRAS DE POLÍTICA DE ROTEAMENTO =====
     # Determinam QUANDO usar a tabela 'vivo'
-    
-    # Regra 1: Todo tráfego originado do IP da eth1 usa tabela 'vivo'
+
+    # Esta regra define que todo tráfego originado do IP 10.12.116.130 da eth1 que será direcionado para tabela 'vivo'
     post-up ip rule add from 10.12.116.130 table vivo priority 1000
-    # Explicação: Qualquer pacote saindo do IP 10.12.116.130 será
-    # roteado usando as regras da tabela 'vivo'
-    
-    # Regra 2: Tráfego destinado ao Balanceador SIP Massivo
+
+    # Esta regra define que todo Pacote destinados ao Balanceador SIP Massivo (10.255.240.111) sera direcionado para tabela 'vivo'
     post-up ip rule add to 10.255.240.111 table vivo priority 1001
-    # Explicação: Pacotes com destino ao servidor SIP Massivo (10.255.240.111)
-    # usarão a tabela 'vivo', garantindo que saiam pela eth1
-    
-    # Regra 3: Tráfego destinado ao Servidor de Mídia (RTP)
+
+    # Esta regra define que todo Pacote de Mídia e RTP direcionados ao destino 10.255.240.112 sera direcionado para tabela 'vivo'
     post-up ip rule add to 10.255.240.112 table vivo priority 1002
-    # Explicação: Pacotes com destino ao servidor de mídia (10.255.240.112)
-    # para tráfego de áudio/vídeo usarão a tabela 'vivo'
-    
-    # Regra 4: Tráfego destinado ao Balanceador SIP Rajada (se aplicável)
+
+    # Esta regra define que todo Pacote destinado ao Balanceador SIP Rajada (10.255.245.1) sera direcionado para tabela 'vivo'
+    # Usado para servidores com alta demanda de chamadas
     post-up ip rule add to 10.255.245.1 table vivo priority 1003
-    # Explicação: Para operadoras que usam servidores diferentes para
-    # chamadas de rajada (alta demanda)
     
     # ===== LIMPEZA AUTOMÁTICA AO DESATIVAR A INTERFACE =====
     # Comandos executados ANTES da interface ser desativada (pre-down)
     
-    # Remove regras de política para evitar conflitos
+    # Remove todas as regras de política para evitar conflitos quando a interface for reativada
     pre-down ip rule del from 10.12.116.130 table vivo
     pre-down ip rule del to 10.255.240.111 table vivo
     pre-down ip rule del to 10.255.240.112 table vivo
     pre-down ip rule del to 10.255.245.1 table vivo
-    # Explicação: Remove todas as regras de política para evitar
-    # conflitos quando a interface for reativada
     
+    # Limpa completamente a tabela 'vivo', removendo todas as rotas específicas
     pre-down ip route flush table vivo
-    # Explicação: Limpa completamente a tabela 'vivo',
-    # removendo todas as rotas específicas
     
-    # ===== CONFIGURAÇÃO DNS =====
+    # Explicação: Define o servidor DNS da operadora para esta interface para resolução de dns
     dns-nameservers 10.255.240.111
-    # Explicação: Define o servidor DNS da operadora para esta interface
-    # (usado apenas se necessário para resolução de nomes específicos)
+    
 ```
 
 #### Aplicação e Verificação da Configuração
