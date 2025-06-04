@@ -1,12 +1,42 @@
-# Resumo Expandido das Configurações de Rede e PABX para Tronco SIP Vivo
+# Resumo Expandido das Configurações de Rede e PABX para Tronco E1 SIP Vivo
+
+## 📋 Configuração de Rede para Tronco E1 SIP
+
+### ✅ Checklist de Configuração
+
+**🌐 CONFIGURAÇÃO DE REDE (Linux):**
+1. **[ ] Obter dados da operadora:**
+   - IP do PABX, máscara, gateway
+   - IPs dos servidores SIP e RTP
+   - Dados de autenticação (se aplicável)
+
+2. **[ ] Configurar `/etc/network/interfaces`:**
+   - Interface eth1 com IP estático
+   - Policy routing com tabela 'vivo'
+   - Regras para IPs específicos da operadora
+
+3. **[ ] Aplicar configuração de rede:**
+   - `sudo systemctl restart networking`
+   - Verificar com comandos de teste
+
+**📞 CONFIGURAÇÃO DO ASTERISK:**
+4. **[ ] Preparar arquivos modulares:**
+   - `sip_nat.conf` com externip e localnet
+   - `rtp.conf` com range de portas RTP
+   - `sip.conf` para troncos e peers
+
+5. **[ ] Aplicar configuração do Asterisk:**
+   - `sudo asterisk -rvvvvvvcgi`
+   - `sip reload`
+   - Verificar com `sip show peers`
 
 ### Dados Essenciais que a Operadora Deve Fornecer
 
-Ao solicitar um tronco SIP E1 ou similar a uma operadora, você sempre precisará fornecer as seguintes informações:
+Ao solicitar um tronco E1 SIP ou similar a uma operadora, você sempre precisará fornecer as seguintes informações:
 
 1.  **Dados da Rede (para a Placa de Rede):**
     * **IP do PABX na Rede da Operadora:** (Ex: `10.12.116.130`)
-    * **Máscara de Sub-rede:** (Ex: `255.255.255.248` ou `/29`)
+    * **Máscara de Sub-rede:** (Ex: `255.255.255.248`).
     * **IP do Gateway da Operadora:** (Ex: `10.12.116.129`)
     * **IPs dos Servidores DNS da Operadora:** (Ex: `10.255.240.111`)
 
@@ -30,248 +60,338 @@ Ao solicitar um tronco SIP E1 ou similar a uma operadora, você sempre precisar�
 
 ### I. Configuração da Placa de Rede no Linux (`/etc/network/interfaces`)
 
-Existem duas abordagens para configurar a rede no Linux, especialmente com múltiplas interfaces:
+**Conceito Importante:** O Linux permite apenas um gateway padrão por sistema. Para usar múltiplas interfaces de rede (eth0 para internet, eth1 para telefonia), utilizamos **Policy Routing** com tabelas de roteamento específicas.
 
-#### 1. Configuração SEM Policy Routing (Abordagem Mais Simples, pode ter Conflitos de Gateway)
+**Objetivo:** Garantir que todo tráfego da operadora (eth1) use suas próprias rotas sem interferir na navegação de internet (eth0).
 
-Esta abordagem é mais direta. Funciona se você tiver um gateway padrão principal (`eth0`) e precisar de rotas específicas para os IPs da operadora (`eth1`).
+#### Entendendo os Componentes da Configuração
 
-**Conteúdo do `/etc/network/interfaces`:**
+**1. Tabelas de Roteamento:**
+- **Tabela Principal (main):** Contém rotas da eth0 (internet)
+- **Tabela 'vivo':** Criada automaticamente para rotas da eth1 (telefonia)
+
+**2. Policy Routing:**
+- **ip rule:** Define QUANDO usar uma tabela específica
+- **ip route:** Define COMO rotear dentro da tabela
+- **priority:** Ordem de prioridade das regras (menor número = maior prioridade)
+
+**3. Fluxo de Funcionamento:**
+1. Pacote chega ao sistema
+2. Linux verifica as regras (`ip rule`) por ordem de prioridade
+3. Se o pacote corresponde a uma regra, usa a tabela especificada
+4. Dentro da tabela, segue as rotas definidas (`ip route`)
+
+**4. Por que não usar gateway na eth1:**
+- Dois gateways padrão causariam conflito
+- O sistema não saberia qual usar para cada destino
+- Policy Routing resolve isso elegantemente
+
+#### Resumo dos Parâmetros da Configuração eth1
+
+| Parâmetro | Valor Exemplo | Descrição |
+|-----------|---------------|-----------|
+| `address` | `10.12.116.130` | IP do PABX fornecido pela operadora |
+| `netmask` | `255.255.255.248` | Máscara da sub-rede (/29 = 8 IPs) |
+| `table vivo` | Nome da tabela | Tabela de roteamento específica para telefonia |
+| Gateway | `10.12.116.129` | Gateway da operadora (apenas na tabela vivo) |
+| Prioridades | `1000-1003` | Ordem das regras (menor = maior prioridade) |
+| IPs de Destino | `10.255.240.111/112` | Servidores SIP e RTP da operadora |
+
+#### Exemplo Prático - Configuração da Interface eth1 (Vivo)
+
+**Arquivo: `/etc/network/interfaces`**
 
 ```text
-auto lo
-iface lo inet loopback
-
-# A interface de rede principal (para internet/rede local padrão)
+# ==================== INTERFACE DE INTERNET (ETH0) ====================
 auto eth0
 allow-hotplug eth0
 iface eth0 inet static
-        address 192.168.0.132
-        netmask 255.255.255.0
-        gateway 192.168.0.1  # Este será o gateway padrão do sistema para tráfego geral
+    address 192.168.0.132
+    netmask 255.255.255.0
+    gateway 192.168.0.1     # Gateway padrão do sistema para internet
 
-# E1 SIP VIVO - Configuração da interface dedicada à operadora
-auto eth1
-allow-hotplug eth1
-iface eth1 inet static
-        address 10.12.116.130
-        netmask 255.255.255.248
-        # O gateway principal já está em eth0. Aqui, usamos o gateway da Vivo SOMENTE para rotas específicas.
-        # NÃO COLOQUE "gateway 10.12.116.129" AQUI para evitar conflito de rota padrão.
-
-        # Rotas explícitas para os IPs da Vivo (Balanceador e Mídia)
-        post-up route add 10.255.240.111 via 10.12.116.129 dev eth1
-        post-up route add 10.255.240.112 via 10.12.116.129 dev eth1
-
-        # Rota para o Balanceador RAJADA (descomente se for usar)
-        # post-up route add 10.255.245.1 via 10.12.116.129 dev eth1
-
-        # Servidores DNS para a interface Vivo
-        dns-nameservers 10.255.240.111
+# ==================== INTERFACE DE TELEFONIA (ETH1) ====================
+auto eth1                   # Ativa automaticamente a interface no boot
+allow-hotplug eth1          # Permite ativação automática quando cabo é conectado
+iface eth1 inet static      # Define configuração estática (não DHCP)
+    
+    # ===== CONFIGURAÇÃO BÁSICA DA INTERFACE =====
+    address 10.12.116.130      # IP do PABX fornecido pela operadora
+    netmask 255.255.255.248    # Máscara /29 (8 IPs: .128 até .135)
+    
+    # OBSERVAÇÃO: NÃO colocamos "gateway" aqui para evitar conflito com eth0
+    
+    # ===== CRIAÇÃO DE TABELA DE ROTEAMENTO ESPECÍFICA =====
+    # Comando executado APÓS a interface subir (post-up)
+    
+    # 1. Rota para a sub-rede local da Vivo
+    # sub-rede 10.12.116.128/29 baseada no mascara 255.255.255.248, mas em ultimo caso pode se usar o 10.12.116.129 no lugar da sub-rede
+    post-up ip route add 10.12.116.128/29 dev eth1 src 10.12.116.130 table vivo
+    # Explicação: Adiciona na tabela 'vivo' uma rota para a rede 10.12.116.128/29
+    # usando eth1 como dispositivo e 10.12.116.130 como IP de origem para todos os pacotes que saem dessa interface
+    
+    # 2. Rota padrão para tráfego destinado aos servidores da Vivo
+    post-up ip route add default via 10.12.116.129 dev eth1 table vivo
+    # Explicação: Define 10.12.116.129 (gateway da Vivo) como rota padrão
+    # na tabela 'vivo' usando a interface eth1
+    
+    # ===== REGRAS DE POLÍTICA DE ROTEAMENTO =====
+    # Determinam QUANDO usar a tabela 'vivo'
+    
+    # Regra 1: Todo tráfego originado do IP da eth1 usa tabela 'vivo'
+    post-up ip rule add from 10.12.116.130 table vivo priority 1000
+    # Explicação: Qualquer pacote saindo do IP 10.12.116.130 será
+    # roteado usando as regras da tabela 'vivo'
+    
+    # Regra 2: Tráfego destinado ao Balanceador SIP Massivo
+    post-up ip rule add to 10.255.240.111 table vivo priority 1001
+    # Explicação: Pacotes com destino ao servidor SIP Massivo (10.255.240.111)
+    # usarão a tabela 'vivo', garantindo que saiam pela eth1
+    
+    # Regra 3: Tráfego destinado ao Servidor de Mídia (RTP)
+    post-up ip rule add to 10.255.240.112 table vivo priority 1002
+    # Explicação: Pacotes com destino ao servidor de mídia (10.255.240.112)
+    # para tráfego de áudio/vídeo usarão a tabela 'vivo'
+    
+    # Regra 4: Tráfego destinado ao Balanceador SIP Rajada (se aplicável)
+    post-up ip rule add to 10.255.245.1 table vivo priority 1003
+    # Explicação: Para operadoras que usam servidores diferentes para
+    # chamadas de rajada (alta demanda)
+    
+    # ===== LIMPEZA AUTOMÁTICA AO DESATIVAR A INTERFACE =====
+    # Comandos executados ANTES da interface ser desativada (pre-down)
+    
+    # Remove regras de política para evitar conflitos
+    pre-down ip rule del from 10.12.116.130 table vivo
+    pre-down ip rule del to 10.255.240.111 table vivo
+    pre-down ip rule del to 10.255.240.112 table vivo
+    pre-down ip rule del to 10.255.245.1 table vivo
+    # Explicação: Remove todas as regras de política para evitar
+    # conflitos quando a interface for reativada
+    
+    pre-down ip route flush table vivo
+    # Explicação: Limpa completamente a tabela 'vivo',
+    # removendo todas as rotas específicas
+    
+    # ===== CONFIGURAÇÃO DNS =====
+    dns-nameservers 10.255.240.111
+    # Explicação: Define o servidor DNS da operadora para esta interface
+    # (usado apenas se necessário para resolução de nomes específicos)
 ```
 
-**Quando usar:** Quando o PABX tem um IP fixo na rede da operadora e a operadora confia no IP de origem para sinalização e mídia, e você quer manter a rota padrão da `eth0` para a internet.
+#### Aplicação e Verificação da Configuração
 
-**Como aplicar:**
+**Como aplicar as mudanças:**
 ```bash
 sudo systemctl restart networking
+# ou
+sudo ifdown eth1 && sudo ifup eth1
 ```
-**Verificação:**
-* `ip a show`
-* `ip route show` (Verifique que a rota padrão é via `eth0` e as rotas específicas para Vivo via `eth1` existem).
-* `ping 10.255.240.111`, `ping 10.255.240.112`, `ping google.com`
+
+**Comandos de verificação essenciais:**
+
+1. **Verificar interfaces ativas:**
+   ```bash
+   ip a show
+   ```
+   *Deve mostrar eth0 e eth1 com IPs corretos*
+
+2. **Verificar tabela de roteamento principal:**
+   ```bash
+   ip route show
+   ```
+   *Deve mostrar apenas o gateway da eth0 como padrão*
+
+3. **Verificar regras de política:**
+   ```bash
+   ip rule show
+   ```
+   *Deve mostrar as regras com prioridades 1000-1003 para tabela vivo*
+
+4. **Verificar tabela específica da Vivo:**
+   ```bash
+   ip route show table vivo
+   ```
+   *Deve mostrar as rotas específicas incluindo default via 10.12.116.129*
+
+5. **Testar conectividade:**
+   ```bash
+   ping 10.255.240.111  # Balanceador SIP
+   ping 10.255.240.112  # Servidor de Mídia
+   ping 10.255.245.1    # Balanceador SIP Rajada
+   ping google.com      # Internet via eth0
+   ```
+
+#### Troubleshooting Comum
+
+**Problema:** Ping para servidores da Vivo não funciona
+- **Verificar:** `ip rule show` e `ip route show table vivo`
+- **Solução:** Certificar que as regras foram aplicadas corretamente
+
+**Problema:** Internet para de funcionar após configurar eth1
+- **Verificar:** `ip route show` (deve ter apenas gateway da eth0)
+- **Solução:** Não colocar gateway na configuração da eth1
+
+**Problema:** Asterisk não consegue se comunicar com a Vivo
+- **Verificar:** Se o Asterisk está fazendo bind na interface correta
+- **Verificar:** Firewall não está bloqueando portas 5060 e 11000-19999
 
 ---
 
-#### 2. Configuração COM Policy Routing (Abordagem Avançada e Robusta para Caso de Conflitos de Gateway)
+### II. Configuração do PABX Asterisk 
 
-Esta abordagem é ideal para garantir que todo o tráfego que se origina ou se destina à interface `eth1` (rede da Vivo) use o gateway e as regras de roteamento específicas da Vivo, sem interferir com as outras interfaces.
+#### Estrutura Modular de Configuração
 
-**Conteúdo do `/etc/network/interfaces`:**
+Para melhor organização, as configurações do Asterisk podem ser divididas em arquivos específicos:
 
-```text
-auto lo
-iface lo inet loopback
-
-# A interface de rede principal (para internet/rede local padrão)
-auto eth0
-allow-hotplug eth0
-iface eth0 inet static
-        address 192.168.0.132
-        netmask 255.255.255.0
-        gateway 192.168.0.1  # Este será o gateway padrão do sistema para tráfego geral
-
-# E1 SIP VIVO - Configuração da interface dedicada à operadora com Policy Routing
-auto eth1
-allow-hotplug eth1
-iface eth1 inet static
-        address 10.12.116.130
-        netmask 255.255.255.248
-        # O gateway padrão é definido NA TABELA DE ROTEAMENTO SEPARADA (table 100)
-        # NÃO COLOQUE "gateway 10.12.116.129" aqui!
-
-        # Definindo a nova tabela de roteamento (table 100) para a interface eth1
-        post-up ip route add 10.12.116.128/29 dev eth1 src 10.12.116.130 table 100
-        post-up ip route add default via 10.12.116.129 dev eth1 table 100
-
-        # Adicionando regras de roteamento para usar a tabela 100
-        # Prioridades (números menores são avaliados primeiro) garantem a ordem
-        post-up ip rule add from 10.12.116.130 table 100 priority 1000  # Tráfego originado da eth1
-        post-up ip rule add to 10.255.240.111 table 100 priority 1001    # Tráfego destinado ao Balanceador MASSIVO
-        post-up ip rule add to 10.255.240.112 table 100 priority 1002    # Tráfego destinado ao IP de Mídia
-        # post-up ip rule add to 10.255.245.1 table 100 priority 1003    # Tráfego destinado ao Balanceador RAJADA (se usar)
-
-        # Limpeza das regras e rotas ao derrubar a interface (muito importante!)
-        pre-down ip rule del from 10.12.116.130 table 100
-        pre-down ip rule del to 10.255.240.111 table 100
-        pre-down ip rule del to 10.255.240.112 table 100
-        # pre-down ip rule del to 10.255.245.1 table 100 # Tráfego destinado ao Balanceador RAJADA (se usar)
-
-        pre-down ip route flush table 100 # Limpa todas as rotas da tabela 100
-
-        # Servidores DNS para a interface Vivo
-        dns-nameservers 10.255.240.111
-```
-
-**Quando usar:** Quando é essencial que o tráfego da operadora use **apenas** a interface dedicada e seu próprio gateway, sem interferir com outras rotas padrão no sistema. Ideal para cenários complexos com múltiplas interfaces e requisitos de roteamento específicos.
-
-**Como aplicar:**
-```bash
-sudo systemctl restart networking
-```
-**Verificação:**
-* `ip a show`
-* `ip route show` (Apenas a rota padrão da `eth0` deve aparecer aqui).
-* `ip rule show` (Verifique as regras `from` e `to` para a `table 100`).
-* `ip route show table 100` (Verifique as rotas específicas da Vivo aqui, incluindo o `default via 10.12.116.129`).
-* `ping 10.255.240.111`, `ping 10.255.240.112`, `ping google.com`
-
----
-
-### II. Configuração do PABX Asterisk (`sip.conf` e `extensions.conf`)
-
-Esta configuração assume que você está usando `chan_sip`.
-
-#### Cenário A: Tronco Baseado em IP (Peer-to-Peer - Modelo da Vivo Fornecido)
-
-**Característica:** Operadora confia no IP de origem do PABX. Não há necessidade de registro SIP explícito com usuário/senha. Geralmente para IPs fixos/dedicados.
-
-#### 1. Arquivo `/etc/asterisk/sip.conf` (ou `sip_custom.conf`)
+- **`sip_nat.conf`** - Configurações de rede e NAT
+- **`rtp.conf`** - Configurações de mídia RTP  
+- **`sip.conf`** - Configurações principais do SIP e troncos
 
 ```ini
-;--------------------------------------------------------------------------------
-; Configurações Gerais do SIP (chan_sip)
-; Estas linhas DEVEM ir na seção [general]
-;--------------------------------------------------------------------------------
+; === CONFIGURAÇÕES DEO sip_nat.conf ===
+externip=10.12.116.130    
+localnet=10.12.116.128/29 
+localnet=192.168.100.0/255.255.255.0
+
+; === CONFIGURAÇÕES DO rtp.conf ===  
+rtpstart=11000
+rtpend=19999
+
+; ...
+```
+
+#### Configuração do Arquivo principal: `sip.conf`
+
+**Cenário A: Tronco Baseado em IP (Peer-to-Peer)**
+
+**Característica:** Operadora confia no IP de origem do PABX. Não há necessidade de registro SIP explícito com usuário/senha.
+
+```ini
+;================================================================================
+; CONFIGURAÇÕES GERAIS DO SIP
+;================================================================================
 [general]
-externip=10.12.116.130    ; O IP do seu PABX na rede da Vivo que a Vivo deve ver
-localnet=10.12.116.128/29 ; Sua sub-rede da eth1. Importante para o Asterisk saber onde está sua rede local.
-bindport=5060             ; Porta padrão para SIP (Vivo usa 5060)
-bindaddr=0.0.0.0          ; Asterisk ouvirá em todas as interfaces
-disallow=all              ; Desabilita todos os codecs primeiro
-allow=alaw                ; Habilita G.711-Alaw (PCMA)
-allow=g729                ; Habilita G.729 (verifique licença se necessário)
+; === INCLUIR ARQUIVOS DE CONFIGURAÇÃO MODULAR ===
+#include "sip_nat.conf"    ; Configurações de rede (externip, localnet)
+#include "rtp.conf"        ; Configurações RTP (rtpstart, rtpend)
 
-rtpstart=11000            ; Início do range de portas RTP (Vivo: 11000 a 19999)
-rtpend=19999              ; Fim do range de portas RTP
+; === CONFIGURAÇÕES BÁSICAS ===
+bindport=5060              ; Porta padrão para SIP (Vivo usa 5060)
+bindaddr=0.0.0.0           ; Asterisk ouvirá em todas as interfaces
 
-qualifyfreq=60            ; Verifica a cada 60 segundos se o tronco está ativo
-canreinvite=no            ; Recomendado 'no' para troncos de operadora
-nat=no                    ; Não há NAT envolvido, pois você está em IP direto da Vivo
-dtmfmode=rfc2833          ; Método DTMF
+; === CODECS ===
+disallow=all               ; Desabilita todos os codecs primeiro
+allow=alaw                 ; Habilita G.711-Alaw (PCMA) - PRIORITÁRIO
+allow=g729                 ; Habilita G.729 (verificar licença se necessário)
 
-; Sem linha 'register =>' no modelo baseado em peer-to-peer.
+; === CONFIGURAÇÕES DE TRONCO ===
+qualifyfreq=60             ; Verifica tronco a cada 60 segundos
+canreinvite=no             ; Recomendado 'no' para troncos de operadora
+nat=no                     ; Sem NAT - IP direto da Vivo
+dtmfmode=rfc2833           ; Método DTMF padrão
 
-;--------------------------------------------------------------------------------
-; Tronco SIP Vivo (E1 SIP VIVO) - Type=peer para comunicação baseada em IP
-;--------------------------------------------------------------------------------
+; === SEM REGISTRO (modelo peer-to-peer) ===
+; register => NÃO usar neste cenário
+
+;================================================================================
+; TRONCO SIP VIVO - COMUNICAÇÃO PEER-TO-PEER
+;================================================================================
 [vivo_trunk]
-type=peer                 ; Comunicação peer-to-peer, confiança baseada no IP
-host=10.255.240.111       ; IP do Balanceador VIVO (MASSIVO)
-port=5060                 ; Porta SIP da Vivo (padrão)
+type=peer                  ; Comunicação baseada em IP (sem autenticação)
+host=10.255.240.111        ; IP do Balanceador SIP VIVO (MASSIVO)
+port=5060                  ; Porta SIP da Vivo
 
-fromuser=1131464000       ; Seu número Piloto para identificação no SIP (no cabeçalho From)
-; fromdomain=10.255.240.111 ; Opcional: domínio da Vivo, se eles exigirem
+; === IDENTIFICAÇÃO ===
+fromuser=1131464000        ; Número Piloto (aparece no cabeçalho From)
+; fromdomain=10.255.240.111 ; Opcional: apenas se Vivo exigir
 
-insecure=port,invite      ; Permite que o Asterisk aceite chamadas do IP e invites SIP mesmo sem autenticação estrita
-qualify=yes               ; Monitora ativamente a disponibilidade do tronco
-directmedia=no            ; Mantenha 'no' para evitar problemas de RTP/NAT
-dtmfmode=rfc2833
-t38pt_udptl=yes           ; Se usar T.38 para fax
-context=from-vivo         ; Contexto no extensions.conf para chamadas de entrada
-call-limit=30             ; Limite de Canais: 30
+; === CONFIGURAÇÕES DE SEGURANÇA ===
+insecure=port,invite       ; Aceita chamadas sem autenticação estrita
+qualify=yes                ; Monitora disponibilidade do tronco
+
+; === CONFIGURAÇÕES DE MÍDIA ===
+directmedia=no             ; Evita problemas de RTP/NAT
+dtmfmode=rfc2833          ; Método DTMF
+t38pt_udptl=yes           ; Suporte T.38 para fax
+
+; === ROTEAMENTO ===
+context=from-vivo          ; Contexto para chamadas de entrada
+call-limit=30              ; Limite de canais simultâneos
 ```
 
 #### Cenário B: Tronco Baseado em Registro e Autenticação
 
-**Característica:** PABX precisa se registrar no servidor da operadora usando usuário e senha. Comum para IPs dinâmicos ou maior segurança.
-
-#### 1. Arquivo `/etc/asterisk/sip.conf` (ou `sip_custom.conf`)
+**Característica:** PABX precisa se registrar no servidor da operadora usando usuário e senha.
 
 ```ini
-;--------------------------------------------------------------------------------
-; Configurações Gerais do SIP (chan_sip)
-; As configurações de externip, localnet, rtpstart/rtpend, codecs etc. permanecem as mesmas
-;--------------------------------------------------------------------------------
+;================================================================================
+; CONFIGURAÇÕES GERAIS DO SIP
+;================================================================================
 [general]
-externip=10.12.116.130    ; O IP do seu PABX na rede da Vivo que a Vivo deve ver
-localnet=10.12.116.128/29 ; Sua sub-rede da eth1.
+; === INCLUIR ARQUIVOS DE CONFIGURAÇÃO MODULAR ===
+#include "sip_nat.conf"    ; Configurações de rede (externip, localnet)  
+#include "rtp.conf"        ; Configurações RTP (rtpstart, rtpend)
+
+; === CONFIGURAÇÕES BÁSICAS ===
 bindport=5060
 bindaddr=0.0.0.0
 disallow=all
 allow=alaw
 allow=g729
-rtpstart=11000
-rtpend=19999
 qualifyfreq=60
 canreinvite=no
-nat=no                    ; Se seu IP externo for fixo na rede da Vivo, continua 'no'.
-                          ; Se o Asterisk precisar lidar com NAT (ex: PABX atrás de outro firewall), pode ser 'yes'.
+nat=no                     ; Se IP fixo na rede Vivo = 'no'
+                          ; Se PABX atrás de firewall = 'yes'
 dtmfmode=rfc2833
 
-; O Asterisk se registrará no servidor da operadora usando usuário e senha.
-; Formato: register => USUARIO:SENHA@HOST_DE_REGISTRO:PORTA_DE_REGISTRO/CONTEXTO_ENTRADA_OU_USUARIO_PARA_INVITES_DE_ENTRADA
+; === REGISTRO COM AUTENTICAÇÃO ===
+; Formato: register => USUARIO:SENHA@HOST:PORTA/NUMERO_PILOTO
 register => SEU_USUARIO_SIP:SUA_SENHA_SIP@10.255.240.111:5060/1131464000
-```
-; Explicação:
-; SEU_USUARIO_SIP: O usuário fornecido pela Vivo (ex: 1131464000)
-; SUA_SENHA_SIP: A senha fornecida pela Vivo
-; 10.255.240.111: O IP do Balanceador VIVO (ou o domínio que eles indicarem para registro)
-; 5060: A porta de registro (geralmente 5060)
-; 1131464000: Este é o "exten" ou "fromuser" que o Asterisk usará para identificar chamadas de entrada
-;             que vêm deste registro (geralmente o número piloto ou o usuário de registro).
 
-```ini
-;--------------------------------------------------------------------------------
-; Tronco SIP Vivo (E1 SIP VIVO) - Configurado para usar autenticação
-;--------------------------------------------------------------------------------
+; Explicação do registro:
+; SEU_USUARIO_SIP: Nome de usuário fornecido pela Vivo
+; SUA_SENHA_SIP: Senha fornecida pela Vivo  
+; 10.255.240.111: IP do servidor de registro da Vivo
+; 5060: Porta de registro (padrão)
+; 1131464000: Número piloto para identificar chamadas de entrada
+
+;================================================================================
+; TRONCO SIP VIVO - COM AUTENTICAÇÃO
+;================================================================================
 [vivo_trunk]
-type=friend               ; 'friend' permite enviar e receber chamadas, lidando com autenticação.
-host=10.255.240.111       ; Ainda apontamos para o IP do Balanceador Vivo
-port=5060                 ; Porta SIP da Vivo
+type=friend                ; Permite enviar/receber com autenticação
+host=10.255.240.111        ; IP do Balanceador Vivo
+port=5060                  ; Porta SIP
 
-; **PARA AUTENTICAÇÃO:**
-username=SEU_USUARIO_SIP  ; O nome de usuário para autenticar no servidor da Vivo
-secret=SUA_SENHA_SIP      ; A senha para autenticar no servidor da Vivo
-fromuser=1131464000       ; O número Piloto que será usado no campo From da requisição SIP (CALLERID)
-fromdomain=10.255.240.111 ; O domínio SIP para o tronco (geralmente o IP do balanceador ou domínio fornecido)
+; === CREDENCIAIS DE AUTENTICAÇÃO ===
+username=SEU_USUARIO_SIP   ; Usuário para autenticação
+secret=SUA_SENHA_SIP       ; Senha para autenticação
+fromuser=1131464000        ; Número Piloto (cabeçalho From)
+fromdomain=10.255.240.111  ; Domínio SIP (IP do balanceador)
 
-insecure=port,invite      ; Ainda útil, mas a autenticação é o principal meio de confiança
-qualify=yes               ; Monitora a disponibilidade do tronco
-directmedia=no            ; Mantenha 'no' para evitar problemas de RTP/NAT
+; === CONFIGURAÇÕES DE SEGURANÇA ===
+insecure=port,invite       ; Ainda útil mesmo com autenticação
+qualify=yes                ; Monitora disponibilidade
+
+; === CONFIGURAÇÕES DE MÍDIA ===
+directmedia=no
 dtmfmode=rfc2833
 t38pt_udptl=yes
-context=from-vivo         ; Contexto no extensions.conf
-call-limit=30             ; Limite de Canais
+
+; === ROTEAMENTO ===
+context=from-vivo
+call-limit=30
 ```
 
-**Como aplicar:**
+#### Aplicação e Verificação das Configurações do Asterisk
+
+**Como aplicar as mudanças:**
 ```bash
-sudo asterisk -rvvv # Acessar o CLI
-sip reload
-dialplan reload
+# Acessar o CLI do Asterisk
+sudo asterisk -rvvvvvvcgi
+
+# No CLI do Asterisk:
+sip reload          # Recarrega configurações SIP
+dialplan reload     # Recarrega dialplan (se alterou extensions.conf)
 ```
-**Verificação (para cenário de Registro/Autenticação):**
-* **`sip show registry`**: Se usar autenticação por `Registered`.
-* `sip show peers` (Verifique status do `vivo_trunk`)
-* Faça chamadas de teste de saída e entrada.
