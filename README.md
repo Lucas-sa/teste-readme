@@ -204,7 +204,6 @@ localnet=192.168.100.0/255.255.255.0
 rtpstart=11000
 rtpend=19999
 
-; ...
 ```
 
 #### Configuração do Arquivo principal: `sip.conf`
