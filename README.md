@@ -2,34 +2,6 @@
 
 ## 📋 Configuração de Rede para Tronco E1 SIP
 
-### ✅ Checklist de Configuração
-
-**🌐 CONFIGURAÇÃO DE REDE (Linux):**
-1. **[ ] Obter dados da operadora:**
-   - IP do PABX, máscara, gateway
-   - IPs dos servidores SIP e RTP
-   - Dados de autenticação (se aplicável)
-
-2. **[ ] Configurar `/etc/network/interfaces`:**
-   - Interface eth1 com IP estático
-   - Policy routing com tabela 'vivo'
-   - Regras para IPs específicos da operadora
-
-3. **[ ] Aplicar configuração de rede:**
-   - `sudo systemctl restart networking`
-   - Verificar com comandos de teste
-
-**📞 CONFIGURAÇÃO DO ASTERISK:**
-4. **[ ] Preparar arquivos modulares:**
-   - `sip_nat.conf` com externip e localnet
-   - `rtp.conf` com range de portas RTP
-   - `sip.conf` para troncos e peers
-
-5. **[ ] Aplicar configuração do Asterisk:**
-   - `sudo asterisk -rvvvvvvcgi`
-   - `sip reload`
-   - Verificar com `sip show peers`
-
 ### Dados Essenciais que a Operadora Deve Fornecer
 
 Ao solicitar um tronco E1 SIP ou similar a uma operadora, você sempre precisará fornecer as seguintes informações:
